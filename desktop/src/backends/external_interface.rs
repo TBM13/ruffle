@@ -42,6 +42,29 @@ impl ExternalInterfaceProvider for DesktopExternalInterfaceProvider {
             return ExternalValue::Undefined;
         }
 
+        if name == "console.log" {
+            let mut log = String::new();
+            for arg in args {
+                match arg {
+                    ExternalValue::String(s) => log.push_str(s),
+                    ExternalValue::Number(n) => log.push_str(&n.to_string()),
+                    ExternalValue::Bool(b) => log.push_str(&b.to_string()),
+                    ExternalValue::Undefined => log.push_str("undefined"),
+                    ExternalValue::Null => log.push_str("null"),
+                    _ => log.push_str("<unknown>"),
+                }
+                log.push(' ');
+            }
+            log.pop(); // remove last space
+
+            tracing::info!("ExternalInterface: console.log: {log}");
+            return ExternalValue::Undefined;
+        }
+
+        if name == "window.navigator.userAgent.toString" {
+            return ExternalValue::String("mundo-gaturro-desktop".to_string());
+        }
+
         tracing::warn!("Trying to call unknown ExternalInterface method: {name}");
         ExternalValue::Undefined
     }
