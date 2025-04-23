@@ -1,5 +1,6 @@
 //! Activation frames
 
+use super::function::display_function;
 use crate::avm2::array::ArrayStorage;
 use crate::avm2::class::Class;
 use crate::avm2::domain::Domain;
@@ -21,10 +22,12 @@ use crate::avm2::Multiname;
 use crate::avm2::Namespace;
 use crate::avm2::{Avm2, Error};
 use crate::context::UpdateContext;
+use crate::string::WString;
 use crate::string::{AvmAtom, AvmString, HasStringContext, StringContext};
 use crate::tag_utils::SwfMovie;
 use gc_arena::Gc;
 use ruffle_macros::istr;
+use ruffle_wstr::WStr;
 use std::cmp::{min, Ordering};
 use std::sync::Arc;
 use swf::avm2::types::{
@@ -88,6 +91,8 @@ pub struct Activation<'a, 'gc: 'a> {
     /// The index where the scope frame starts.
     scope_depth: usize,
 
+    in_mmo_execute: bool,
+
     pub context: &'a mut UpdateContext<'gc>,
 }
 
@@ -130,6 +135,7 @@ impl<'a, 'gc> Activation<'a, 'gc> {
             activation_class: None,
             stack_depth: context.avm2.stack.len(),
             scope_depth: context.avm2.scope_stack.len(),
+            in_mmo_execute: false,
             context,
         }
     }
@@ -154,6 +160,7 @@ impl<'a, 'gc> Activation<'a, 'gc> {
             activation_class: None,
             stack_depth: context.avm2.stack.len(),
             scope_depth: context.avm2.scope_stack.len(),
+            in_mmo_execute: false,
             context,
         }
     }
@@ -210,6 +217,7 @@ impl<'a, 'gc> Activation<'a, 'gc> {
             activation_class,
             stack_depth: context.avm2.stack.len(),
             scope_depth: context.avm2.scope_stack.len(),
+            in_mmo_execute: false,
             context,
         };
 
@@ -391,6 +399,44 @@ impl<'a, 'gc> Activation<'a, 'gc> {
         self.activation_class = activation_class;
         self.stack_depth = self.context.avm2.stack.len();
         self.scope_depth = self.context.avm2.scope_stack.len();
+        self.in_mmo_execute = false;
+
+        if let Some(class) = bound_class {
+            if class.name().local_name().to_string() == "MMO" {
+                let mut function_name = WString::new();
+                display_function(&mut function_name, &Method::Bytecode(method), bound_class);
+                let function_name = function_name.to_string();
+
+                if function_name == "MMO/saveTesting()" {
+                    let array = user_arguments
+                        .get(0)
+                        .and_then(|v| v.as_object())
+                        .and_then(|o| o.as_array_object())
+                        .unwrap();
+
+                    let mut args_string = String::new();
+                    for i in 0..array.array_storage().length() {
+                        if let Some(arg) = array.array_storage().get(i) {
+                            if let Ok(str) = arg.as_debug_string(self) {
+                                args_string.push_str(&str);
+                            } else {
+                                args_string.push_str("<unknown>");
+                            }
+                        } else {
+                            args_string.push_str("<None>");
+                        }
+
+                        args_string.push_str(", ");
+                    }
+
+                    tracing::info!("Calling {:?} w args [{:?}]", function_name, args_string);
+                }
+
+                if function_name == "MMO/execute()" {
+                    self.in_mmo_execute = true;
+                }
+            }
+        }
 
         // Everything is now setup for the verifier to run
         if method.verified_info.borrow().is_none() {
@@ -497,6 +543,7 @@ impl<'a, 'gc> Activation<'a, 'gc> {
             activation_class: None,
             stack_depth: context.avm2.stack.len(),
             scope_depth: context.avm2.scope_stack.len(),
+            in_mmo_execute: false,
             context,
         }
     }
@@ -836,7 +883,14 @@ impl<'a, 'gc> Activation<'a, 'gc> {
                 Op::Swap => self.op_swap(),
                 Op::URShift => self.op_urshift(),
                 Op::StrictEquals => self.op_strict_equals(),
-                Op::Equals => self.op_equals(),
+                Op::Equals => {
+                    if self.in_mmo_execute {
+                        tracing::error!("HACK! Forcing return True on OP::Equals");
+                        self.op_equals(Some(true))
+                    } else {
+                        self.op_equals(None)
+                    }
+                }
                 Op::GreaterEquals => self.op_greater_equals(),
                 Op::GreaterThan => self.op_greater_than(),
                 Op::LessEquals => self.op_less_equals(),
@@ -2239,11 +2293,14 @@ impl<'a, 'gc> Activation<'a, 'gc> {
         Ok(())
     }
 
-    fn op_equals(&mut self) -> Result<(), Error<'gc>> {
+    fn op_equals(&mut self, override_res: Option<bool>) -> Result<(), Error<'gc>> {
         let value2 = self.pop_stack();
         let value1 = self.pop_stack();
 
-        let result = value1.abstract_eq(&value2, self)?;
+        let result = match override_res {
+            Some(res) => res,
+            None => value1.abstract_eq(&value2, self)?,
+        };
 
         self.push_stack(result);
 
