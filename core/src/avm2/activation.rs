@@ -28,7 +28,6 @@ use crate::string::{AvmAtom, AvmString, HasStringContext, StringContext};
 use crate::tag_utils::SwfMovie;
 use gc_arena::Gc;
 use ruffle_macros::istr;
-use ruffle_wstr::WStr;
 use std::cmp::{min, Ordering};
 use std::sync::Arc;
 use swf::avm2::types::{
@@ -393,8 +392,8 @@ impl<'a, 'gc> Activation<'a, 'gc> {
 
                 if function_name == "MMO/saveTesting()" {
                     let array = user_arguments
-                        .get(0)
-                        .and_then(|v| v.as_object())
+                        .get_at(self, 0)
+                        .as_object()
                         .and_then(|o| o.as_array_object())
                         .unwrap();
 
