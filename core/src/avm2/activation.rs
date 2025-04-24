@@ -872,14 +872,7 @@ impl<'a, 'gc> Activation<'a, 'gc> {
                 Op::Swap => self.op_swap(),
                 Op::URShift => self.op_urshift(),
                 Op::StrictEquals => self.op_strict_equals(),
-                Op::Equals => {
-                    if matches!(self.mmo_func, MMOFunctions::MMOExecute) {
-                        tracing::error!("HACK! Forcing return True on OP::Equals");
-                        self.op_equals(Some(true))
-                    } else {
-                        self.op_equals(None)
-                    }
-                }
+                Op::Equals => self.op_equals(),
                 Op::GreaterEquals => self.op_greater_equals(),
                 Op::GreaterThan => self.op_greater_than(),
                 Op::LessEquals => self.op_less_equals(),
@@ -2314,13 +2307,17 @@ impl<'a, 'gc> Activation<'a, 'gc> {
         Ok(())
     }
 
-    fn op_equals(&mut self, override_res: Option<bool>) -> Result<(), Error<'gc>> {
+    fn op_equals(&mut self) -> Result<(), Error<'gc>> {
         let value2 = self.pop_stack();
         let value1 = self.pop_stack();
 
-        let result = match override_res {
-            Some(res) => res,
-            None => value1.abstract_eq(&value2, self)?,
+        let result = {
+            if matches!(self.mmo_func, MMOFunctions::MMOExecute) {
+                tracing::error!("HACK! Forcing return True on OP::Equals");
+                true
+            } else {
+                value1.abstract_eq(&value2, self)?
+            }
         };
 
         self.push_stack(result);
