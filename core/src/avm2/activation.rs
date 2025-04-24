@@ -36,6 +36,12 @@ use swf::avm2::types::{
 
 use super::error::make_mismatch_error;
 
+enum MMOFunctions {
+    NONE,
+    MMOConstructor,
+    MMOExecute,
+}
+
 /// Represents a single activation of a given AVM2 function or keyframe.
 pub struct Activation<'a, 'gc: 'a> {
     /// The number of locals this method uses.
@@ -81,7 +87,7 @@ pub struct Activation<'a, 'gc: 'a> {
     /// The index where the scope frame starts.
     scope_depth: usize,
 
-    in_mmo_execute: bool,
+    mmo_func: MMOFunctions,
 
     pub context: &'a mut UpdateContext<'gc>,
 }
@@ -124,7 +130,7 @@ impl<'a, 'gc> Activation<'a, 'gc> {
             bound_class: None,
             stack_depth: context.avm2.stack.len(),
             scope_depth: context.avm2.scope_stack.len(),
-            in_mmo_execute: false,
+            mmo_func: MMOFunctions::NONE,
             context,
         }
     }
@@ -148,7 +154,7 @@ impl<'a, 'gc> Activation<'a, 'gc> {
             bound_class: None,
             stack_depth: context.avm2.stack.len(),
             scope_depth: context.avm2.scope_stack.len(),
-            in_mmo_execute: false,
+            mmo_func: MMOFunctions::NONE,
             context,
         }
     }
@@ -181,7 +187,7 @@ impl<'a, 'gc> Activation<'a, 'gc> {
             bound_class: Some(script.global_class()),
             stack_depth: context.avm2.stack.len(),
             scope_depth: context.avm2.scope_stack.len(),
-            in_mmo_execute: false,
+            mmo_func: MMOFunctions::NONE,
             context,
         };
 
@@ -382,7 +388,7 @@ impl<'a, 'gc> Activation<'a, 'gc> {
         self.bound_class = bound_class;
         self.stack_depth = self.context.avm2.stack.len();
         self.scope_depth = self.context.avm2.scope_stack.len();
-        self.in_mmo_execute = false;
+        self.mmo_func = MMOFunctions::NONE;
 
         if let Some(class) = bound_class {
             if class.name().local_name().to_string() == "MMO" {
@@ -413,10 +419,16 @@ impl<'a, 'gc> Activation<'a, 'gc> {
                     }
 
                     tracing::info!("Calling {:?} w args [{:?}]", function_name, args_string);
-                }
+                } else {
+                    if function_name == "MMO()" {
+                        self.mmo_func = MMOFunctions::MMOConstructor;
+                    } else if function_name == "MMO/execute()" {
+                        self.mmo_func = MMOFunctions::MMOExecute;
+                    }
 
-                if function_name == "MMO/execute()" {
-                    self.in_mmo_execute = true;
+                    if !matches!(self.mmo_func, MMOFunctions::NONE) {
+                        tracing::error!("Calling {:?}", function_name);
+                    }
                 }
             }
         }
@@ -525,7 +537,7 @@ impl<'a, 'gc> Activation<'a, 'gc> {
             bound_class,
             stack_depth: context.avm2.stack.len(),
             scope_depth: context.avm2.scope_stack.len(),
-            in_mmo_execute: false,
+            mmo_func: MMOFunctions::NONE,
             context,
         }
     }
@@ -861,7 +873,7 @@ impl<'a, 'gc> Activation<'a, 'gc> {
                 Op::URShift => self.op_urshift(),
                 Op::StrictEquals => self.op_strict_equals(),
                 Op::Equals => {
-                    if self.in_mmo_execute {
+                    if matches!(self.mmo_func, MMOFunctions::MMOExecute) {
                         tracing::error!("HACK! Forcing return True on OP::Equals");
                         self.op_equals(Some(true))
                     } else {
@@ -1154,7 +1166,17 @@ impl<'a, 'gc> Activation<'a, 'gc> {
             .peek(arg_count as usize)
             .null_check(self, None)?;
 
-        let value = receiver.call_method_with_args(index, args, self)?;
+        let value = {
+            if push_return_value && matches!(self.mmo_func, MMOFunctions::MMOConstructor) {
+                // var _loc1_:§_i_--__--§ = new §_i_--__--§();
+                // if(!_loc1_.§_i_----_§(this)) return;
+
+                tracing::error!("HACK! Ignoring call & returning True on OP::CallMethod. This should only happen once");
+                Value::Bool(true)
+            } else {
+                receiver.call_method_with_args(index, args, self)?
+            }
+        };
 
         // Ensure all arguments are popped
         self.avm2().truncate_stack(stack_base - 1);
