@@ -40,6 +40,7 @@ enum MMOFunctions {
     NONE,
     MMOConstructor,
     MMOExecute,
+    MinesConnect,
 }
 
 /// Represents a single activation of a given AVM2 function or keyframe.
@@ -391,45 +392,58 @@ impl<'a, 'gc> Activation<'a, 'gc> {
         self.mmo_func = MMOFunctions::NONE;
 
         if let Some(class) = bound_class {
-            if class.name().local_name().to_string() == "MMO" {
-                let mut function_name = WString::new();
-                display_function(&mut function_name, &Method::Bytecode(method), bound_class);
-                let function_name = function_name.to_string();
+            match class.name().local_name().to_string().as_str() {
+                "MMO" => {
+                    let mut function_name = WString::new();
+                    display_function(&mut function_name, &Method::Bytecode(method), bound_class);
+                    let function_name = function_name.to_string();
 
-                if function_name == "MMO/saveTesting()" {
-                    let array = user_arguments
-                        .get_at(self, 0)
-                        .as_object()
-                        .and_then(|o| o.as_array_object())
-                        .unwrap();
+                    if function_name == "MMO/saveTesting()" {
+                        let array = user_arguments
+                            .get_at(self, 0)
+                            .as_object()
+                            .and_then(|o| o.as_array_object())
+                            .unwrap();
 
-                    let mut args_string = String::new();
-                    for i in 0..array.array_storage().length() {
-                        if let Some(arg) = array.array_storage().get(i) {
-                            if let Ok(str) = arg.as_debug_string(self) {
-                                args_string.push_str(&str);
+                        let mut args_string = String::new();
+                        for i in 0..array.array_storage().length() {
+                            if let Some(arg) = array.array_storage().get(i) {
+                                if let Ok(str) = arg.as_debug_string(self) {
+                                    args_string.push_str(&str);
+                                } else {
+                                    args_string.push_str("<unknown>");
+                                }
                             } else {
-                                args_string.push_str("<unknown>");
+                                args_string.push_str("<None>");
                             }
-                        } else {
-                            args_string.push_str("<None>");
+
+                            args_string.push_str(", ");
                         }
 
-                        args_string.push_str(", ");
-                    }
+                        tracing::info!("Calling {:?} w args [{:?}]", function_name, args_string);
+                    } else {
+                        if function_name == "MMO()" {
+                            self.mmo_func = MMOFunctions::MMOConstructor;
+                        } else if function_name == "MMO/execute()" {
+                            self.mmo_func = MMOFunctions::MMOExecute;
+                        }
 
-                    tracing::info!("Calling {:?} w args [{:?}]", function_name, args_string);
-                } else {
-                    if function_name == "MMO()" {
-                        self.mmo_func = MMOFunctions::MMOConstructor;
-                    } else if function_name == "MMO/execute()" {
-                        self.mmo_func = MMOFunctions::MMOExecute;
+                        if !matches!(self.mmo_func, MMOFunctions::NONE) {
+                            tracing::error!("Calling {:?}", function_name);
+                        }
                     }
+                }
+                "MinesServer" => {
+                    let mut function_name = WString::new();
+                    display_function(&mut function_name, &Method::Bytecode(method), bound_class);
+                    let function_name = function_name.to_string();
 
-                    if !matches!(self.mmo_func, MMOFunctions::NONE) {
+                    if function_name == "com.qb9.mines.network::MinesServer/connect()" {
+                        self.mmo_func = MMOFunctions::MinesConnect;
                         tracing::error!("Calling {:?}", function_name);
                     }
                 }
+                _ => {}
             }
         }
 
@@ -1164,7 +1178,9 @@ impl<'a, 'gc> Activation<'a, 'gc> {
                 // var _loc1_:§_i_--__--§ = new §_i_--__--§();
                 // if(!_loc1_.§_i_----_§(this)) return;
 
-                tracing::error!("HACK! Ignoring call & returning True on OP::CallMethod. This should only happen once");
+                tracing::error!("HACK! Ignoring call & returning True on OP::CallMethod. Should only happen once");
+                self.mmo_func = MMOFunctions::NONE;
+
                 Value::Bool(true)
             } else {
                 receiver.call_method_with_args(index, args, self)?
@@ -1218,7 +1234,23 @@ impl<'a, 'gc> Activation<'a, 'gc> {
         multiname: Gc<'gc, Multiname<'gc>>,
         arg_count: u32,
     ) -> Result<(), Error<'gc>> {
-        let args = self.pop_stack_args(arg_count);
+        let args: Vec<Value<'gc>> = {
+            if matches!(self.mmo_func, MMOFunctions::MinesConnect) {
+                tracing::error!(
+                    "HACK! Overriding Socket.connect IP & port. Should only happen once"
+                );
+                self.mmo_func = MMOFunctions::NONE;
+
+                _ = self.pop_stack_args(arg_count);
+                vec![
+                    AvmString::new(self.gc(), WString::from_utf8("127.0.0.1")).into(),
+                    Value::Integer(12345),
+                ]
+            } else {
+                self.pop_stack_args(arg_count)
+            }
+        };
+
         let multiname = multiname.fill_with_runtime_params(self)?;
         let receiver = self.pop_stack().null_check(self, Some(&multiname))?;
 
@@ -2313,7 +2345,9 @@ impl<'a, 'gc> Activation<'a, 'gc> {
 
         let result = {
             if matches!(self.mmo_func, MMOFunctions::MMOExecute) {
-                tracing::error!("HACK! Forcing return True on OP::Equals");
+                tracing::error!("HACK! Forcing return True on OP::Equals. Should only happen once");
+                self.mmo_func = MMOFunctions::NONE;
+
                 true
             } else {
                 value1.abstract_eq(&value2, self)?
