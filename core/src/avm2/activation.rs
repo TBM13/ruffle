@@ -1234,20 +1234,22 @@ impl<'a, 'gc> Activation<'a, 'gc> {
         multiname: Gc<'gc, Multiname<'gc>>,
         arg_count: u32,
     ) -> Result<(), Error<'gc>> {
-        let args: Vec<Value<'gc>> = {
+        let args = self.pop_stack_args(arg_count);
+        let args = {
             if matches!(self.mmo_func, MMOFunctions::MinesConnect) {
                 tracing::error!(
-                    "HACK! Overriding Socket.connect IP & port. Should only happen once"
+                    "HACK! Overriding Socket.connect IP & port. Original: {:?}:{:?}",
+                    args[0],
+                    args[1]
                 );
                 self.mmo_func = MMOFunctions::NONE;
 
-                _ = self.pop_stack_args(arg_count);
                 vec![
                     AvmString::new(self.gc(), WString::from_utf8("127.0.0.1")).into(),
                     Value::Integer(12345),
                 ]
             } else {
-                self.pop_stack_args(arg_count)
+                args
             }
         };
 
